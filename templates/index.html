@@ -2,37 +2,79 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Azure Text to Speech</title>
+  <title>Azure Speech Studio</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 600px; margin: 60px auto; padding: 0 20px; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 24px; }
+    .tab-btn {
+      padding: 10px 20px; font-size: 1rem; cursor: pointer;
+      background: #eee; border: 1px solid #ccc; border-radius: 6px;
+    }
+    .tab-btn.active { background: #2c3e50; color: white; border-color: #2c3e50; }
+    .panel { display: none; }
+    .panel.active { display: block; }
     textarea { width: 100%; height: 120px; font-size: 1rem; padding: 8px; box-sizing: border-box; }
-    button { margin-top: 12px; padding: 10px 20px; font-size: 1rem; cursor: pointer; }
+    button.action { margin-top: 12px; padding: 10px 20px; font-size: 1rem; cursor: pointer; }
     audio { display: block; margin-top: 20px; width: 100%; }
     .error { color: #c0392b; margin-top: 12px; }
-    .hint { color: #666; font-size: 0.85rem; }
+    .hint { color: #666; font-size: 0.85rem; margin-bottom: 8px; }
+    .transcript {
+      margin-top: 16px; padding: 12px; min-height: 40px;
+      border: 1px solid #ccc; border-radius: 6px; background: #fafafa;
+    }
+    .record-btn.recording { background: #c0392b; color: white; }
   </style>
 </head>
 <body>
-  <h1>Text to Speech</h1>
-  <p class="hint">Enter up to 500 characters and click Speak.</p>
-  <textarea id="text" maxlength="500" placeholder="Type something to hear it spoken aloud..."></textarea>
-  <br />
-  <button id="speak">Speak</button>
-  <div id="error" class="error"></div>
-  <audio id="player" controls></audio>
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="tts">Text to Speech</button>
+    <button class="tab-btn" data-tab="stt">Speech to Text</button>
+  </div>
+
+  <section id="tts" class="panel active">
+    <h1>Text to Speech</h1>
+    <p class="hint">Enter up to 500 characters and click Speak.</p>
+    <textarea id="text" maxlength="500" placeholder="Type something to hear it spoken aloud..."></textarea>
+    <br />
+    <button id="speak" class="action">Speak</button>
+    <div id="tts-error" class="error"></div>
+    <audio id="player" controls></audio>
+  </section>
+
+  <section id="stt" class="panel">
+    <h1>Speech to Text</h1>
+    <p class="hint">Click Record, say something, then click Stop.</p>
+    <button id="record" class="action record-btn">Record</button>
+    <div id="stt-error" class="error"></div>
+    <div id="transcript" class="transcript"></div>
+  </section>
 
   <script>
+    // Tab switching
+    const tabButtons = document.querySelectorAll(".tab-btn");
+    const panels = document.querySelectorAll(".panel");
+
+    tabButtons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        tabButtons.forEach((b) => b.classList.remove("active"));
+        panels.forEach((p) => p.classList.remove("active"));
+        btn.classList.add("active");
+        document.getElementById(btn.dataset.tab).classList.add("active");
+      });
+    });
+
+    // Text to Speech
     const speakBtn = document.getElementById("speak");
     const textArea = document.getElementById("text");
     const player = document.getElementById("player");
-    const errorDiv = document.getElementById("error");
+    const ttsError = document.getElementById("tts-error");
 
     speakBtn.addEventListener("click", async () => {
       const text = textArea.value.trim();
-      errorDiv.textContent = "";
+      ttsError.textContent = "";
 
       if (!text) {
-        errorDiv.textContent = "Please enter some text.";
+        ttsError.textContent = "Please enter some text.";
         return;
       }
 
@@ -48,7 +90,7 @@
 
         if (!response.ok) {
           const data = await response.json().catch(() => ({}));
-          errorDiv.textContent = data.error || "Something went wrong.";
+          ttsError.textContent = data.error || "Something went wrong.";
           return;
         }
 
@@ -56,12 +98,133 @@
         player.src = URL.createObjectURL(blob);
         player.play();
       } catch (err) {
-        errorDiv.textContent = "Network error. Please try again.";
+        ttsError.textContent = "Network error. Please try again.";
       } finally {
         speakBtn.disabled = false;
         speakBtn.textContent = "Speak";
       }
     });
+
+    // Speech to Text
+    const recordBtn = document.getElementById("record");
+    const sttError = document.getElementById("stt-error");
+    const transcriptDiv = document.getElementById("transcript");
+
+    let audioContext, mediaStream, processor, sourceNode;
+    let recordedChunks = [];
+    let isRecording = false;
+
+    recordBtn.addEventListener("click", async () => {
+      if (!isRecording) {
+        await startRecording();
+      } else {
+        stopRecording();
+      }
+    });
+
+    async function startRecording() {
+      sttError.textContent = "";
+      transcriptDiv.textContent = "";
+      recordedChunks = [];
+
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err) {
+        sttError.textContent = "Microphone access denied.";
+        return;
+      }
+
+      audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      sourceNode = audioContext.createMediaStreamSource(mediaStream);
+      processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+      sourceNode.connect(processor);
+      processor.connect(audioContext.destination);
+
+      processor.onaudioprocess = (e) => {
+        recordedChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+      };
+
+      isRecording = true;
+      recordBtn.textContent = "Stop";
+      recordBtn.classList.add("recording");
+    }
+
+    function stopRecording() {
+      isRecording = false;
+      recordBtn.textContent = "Record";
+      recordBtn.classList.remove("recording");
+
+      processor.disconnect();
+      sourceNode.disconnect();
+      mediaStream.getTracks().forEach((t) => t.stop());
+
+      const wavBlob = encodeWAV(recordedChunks, audioContext.sampleRate);
+      sendForTranscription(wavBlob);
+    }
+
+    function encodeWAV(chunks, sampleRate) {
+      const length = chunks.reduce((sum, c) => sum + c.length, 0);
+      const merged = new Float32Array(length);
+      let offset = 0;
+      for (const c of chunks) {
+        merged.set(c, offset);
+        offset += c.length;
+      }
+
+      const buffer = new ArrayBuffer(44 + merged.length * 2);
+      const view = new DataView(buffer);
+
+      writeString(view, 0, "RIFF");
+      view.setUint32(4, 36 + merged.length * 2, true);
+      writeString(view, 8, "WAVE");
+      writeString(view, 12, "fmt ");
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * 2, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      writeString(view, 36, "data");
+      view.setUint32(40, merged.length * 2, true);
+
+      let idx = 44;
+      for (let i = 0; i < merged.length; i++, idx += 2) {
+        const s = Math.max(-1, Math.min(1, merged[i]));
+        view.setInt16(idx, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      }
+
+      return new Blob([view], { type: "audio/wav" });
+    }
+
+    function writeString(view, offset, str) {
+      for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+      }
+    }
+
+    async function sendForTranscription(blob) {
+      transcriptDiv.textContent = "Transcribing...";
+      const formData = new FormData();
+      formData.append("audio", blob, "recording.wav");
+
+      try {
+        const response = await fetch("/transcribe", { method: "POST", body: formData });
+        const data = await response.json();
+
+        if (!response.ok) {
+          transcriptDiv.textContent = "";
+          sttError.textContent = data.error || "Transcription failed.";
+          return;
+        }
+
+        transcriptDiv.textContent = data.text || "(no speech detected)";
+      } catch (err) {
+        transcriptDiv.textContent = "";
+        sttError.textContent = "Network error during transcription.";
+      }
+    }
   </script>
 </body>
 </html>
